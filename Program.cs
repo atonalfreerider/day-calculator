@@ -15,74 +15,38 @@ catch (Exception ex)
     return;
 }
 
-// Find the latest date in the calendar to use as "today"
-DateTime maxEventDay = DateTime.MinValue;
-List<DateTime> allEventDays = [];
-foreach (string line in calText.Split('\n'))
+// Define zone configs
+var zones = new[]
 {
-    if (line.StartsWith("DTSTART;VALUE=DATE:") || line.StartsWith("DTEND;VALUE=DATE:"))
-    {
-        string date = line[(line.IndexOf(':') + 1)..];
-        int year = int.Parse(date[..4]);
-        int month = int.Parse(date.Substring(4, 2));
-        int day = int.Parse(date.Substring(6, 2));
-        DateTime dt = new DateTime(year, month, day);
-        allEventDays.Add(dt);
-        if (dt > maxEventDay) maxEventDay = dt;
-    }
-}
-
-DateTime schengenStart =
-    allEventDays.Count > 0 ? allEventDays.Max().Subtract(new TimeSpan(180, 0, 0, 0)) : DateTime.MinValue;
-DateTime today = allEventDays.Count > 0 ? allEventDays.Max() : DateTime.MinValue;
-
-Console.WriteLine($"today: {Color(today.ToString(CultureInfo.InvariantCulture), "yellow")}");
-Console.WriteLine(
-    $"180-day window start: {Color(schengenStart.ToString(CultureInfo.InvariantCulture), "yellow")}");
-
-string[] events = calText.Split("BEGIN:VEVENT");
-
-// Add major Polish cities and London
-string[] schengenKeywords =
-[
-    "POLAND", "BERLIN", "GERMANY", "FRANCE", "SPAIN", "ITALY", "NETHERLANDS", "AUSTRIA", "CZECH", "SWITZERLAND",
-    "GREECE", "HUNGARY", "SLOVAKIA", "SLOVENIA", "LUXEMBOURG", "BELGIUM", "DENMARK", "ESTONIA", "FINLAND", "ICELAND",
-    "LATVIA", "LITHUANIA", "MALTA", "NORWAY", "PORTUGAL", "SWEDEN",
-    "WARSAW", "KRAKOW", "WROCLAW", "GDANSK", "POZNAN", "SZCZECIN", "LODZ", "KATOWICE", "LUBLIN", "BYDGOSZCZ"
-];
-string[] ukraineKeywords = ["UKRAINE", "KYIV", "LVIV", "ODESA", "KHARKIV"];
-string[] ukKeywords = ["LONDON", "UNITED KINGDOM", "ENGLAND"];
+    new { Name = "SCHENGEN", Keywords = new[] {
+        "POLAND", "BERLIN", "GERMANY", "FRANCE", "SPAIN", "ITALY", "NETHERLANDS", "AUSTRIA", "CZECH", "SWITZERLAND",
+        "GREECE", "HUNGARY", "SLOVAKIA", "SLOVENIA", "LUXEMBOURG", "BELGIUM", "DENMARK", "ESTONIA", "FINLAND", "ICELAND",
+        "LATVIA", "LITHUANIA", "MALTA", "NORWAY", "PORTUGAL", "SWEDEN",
+        "WARSAW", "KRAKOW", "WROCLAW", "GDANSK", "POZNAN", "SZCZECIN", "LODZ", "KATOWICE", "LUBLIN", "BYDGOSZCZ"
+    }, Limit = 90, Window = 180 },
+    new { Name = "UKRAINE", Keywords = new[] { "UKRAINE", "KYIV", "LVIV", "ODESA", "KHARKIV" }, Limit = 90, Window = 180 },
+    new { Name = "UK", Keywords = new[] { "LONDON", "UNITED KINGDOM", "ENGLAND" }, Limit = 183, Window = 365 } // 6 months
+};
 string[] airbnbKeywords = ["AIRBNB", "RESERVATION", "BOOKING"];
 
-// Track days in each region
-HashSet<DateTime> schengenDays = [];
-HashSet<DateTime> ukraineDays = [];
-HashSet<DateTime> ukDays = [];
-Dictionary<DateTime, string> dayCountry = new();
+// Parse events and assign days to zones
+Dictionary<DateTime, string> dayZone = new();
+string[] events = calText.Split("BEGIN:VEVENT");
+List<(DateTime start, DateTime end, string zone)> eventRanges = [];
 
 foreach (string eventString in events)
 {
     string[] lines = eventString.Split('\n');
     string summary = lines.FirstOrDefault(l => l.StartsWith("SUMMARY:"))?[8..]?.ToUpper() ?? "";
-    // Try to infer country
-    string? country = null;
-    if (schengenKeywords.Any(k => summary.Contains(k))) country = "SCHENGEN";
-    else if (ukraineKeywords.Any(k => summary.Contains(k))) country = "UKRAINE";
-    else if (ukKeywords.Any(k => summary.Contains(k))) country = "UK";
-    else if (airbnbKeywords.Any(k => summary.Contains(k)))
-    {
-        foreach (string k in schengenKeywords)
-            if (summary.Contains(k))
-                country = "SCHENGEN";
-        foreach (string k in ukraineKeywords)
-            if (summary.Contains(k))
-                country = "UKRAINE";
-        foreach (string k in ukKeywords)
-            if (summary.Contains(k))
-                country = "UK";
-    }
-
-    if (country == null) continue;
+    string? zone = null;
+    foreach (var z in zones)
+        if (z.Keywords.Any(k => summary.Contains(k)))
+            zone = z.Name;
+    if (zone == null && airbnbKeywords.Any(k => summary.Contains(k)))
+        foreach (var z in zones)
+            if (z.Keywords.Any(k => summary.Contains(k)))
+                zone = z.Name;
+    if (zone == null) continue;
 
     DateTime start = DateTime.MinValue, end = DateTime.MinValue;
     foreach (string line in lines)
@@ -104,137 +68,134 @@ foreach (string eventString in events)
             end = new DateTime(year, month, day);
         }
     }
-
     if (start == DateTime.MinValue || end == DateTime.MinValue) continue;
-    if (end < schengenStart) continue;
-    if (start < schengenStart) start = schengenStart;
-    for (DateTime d = start; d < end; d = d.AddDays(1))
+    eventRanges.Add((start, end, zone));
+}
+
+// Sort events by start date
+eventRanges.Sort((a, b) => a.start.CompareTo(b.start));
+
+// Fill timeline with continuous zones or OUTSIDE
+DateTime timelineStart = eventRanges.Count > 0 ? eventRanges.Min(e => e.start) : DateTime.MinValue;
+DateTime timelineEnd = eventRanges.Count > 0 ? eventRanges.Max(e => e.end.AddDays(-1)) : DateTime.MinValue;
+if (timelineStart == DateTime.MinValue || timelineEnd == DateTime.MinValue)
+{
+    Console.WriteLine("No events found.");
+    return;
+}
+
+DateTime d = timelineStart;
+int idx = 0;
+while (d <= timelineEnd)
+{
+    if (idx < eventRanges.Count && d >= eventRanges[idx].start && d < eventRanges[idx].end)
     {
-        switch (country)
+        dayZone[d] = eventRanges[idx].zone;
+    }
+    else
+    {
+        // If between events, fill with OUTSIDE or last zone if events are contiguous
+        // If d == end of previous event and d == start of next event, use next event's zone
+        bool isGap = true;
+        if (idx > 0 && d == eventRanges[idx - 1].end && idx < eventRanges.Count && d == eventRanges[idx].start)
         {
-            case "SCHENGEN":
-                schengenDays.Add(d);
-                break;
-            case "UKRAINE":
-                ukraineDays.Add(d);
-                break;
-            case "UK":
-                ukDays.Add(d);
-                break;
+            dayZone[d] = eventRanges[idx].zone;
+            isGap = false;
         }
-
-        dayCountry.TryAdd(d, country);
+        if (isGap)
+            dayZone[d] = "OUTSIDE";
     }
+    // Move to next event if needed
+    if (idx < eventRanges.Count && d >= eventRanges[idx].end.AddDays(-1))
+        idx++;
+    d = d.AddDays(1);
 }
 
-// Fill in missing days as "OUTSIDE" or last known zone
-DateTime schengenWindowStart = allEventDays.Count > 0
-    ? allEventDays.Max().Subtract(new TimeSpan(180, 0, 0, 0))
-    : DateTime.MinValue;
-DateTime lastDay = allEventDays.Count > 0 ? allEventDays.Max() : DateTime.MinValue;
-string? lastZone = null;
-for (DateTime d = schengenWindowStart; d <= lastDay; d = d.AddDays(1))
+// Print summary
+Console.WriteLine($"today: {Color(timelineEnd.ToString(CultureInfo.InvariantCulture), "yellow")}");
+foreach (var z in zones)
 {
-    if (!dayCountry.TryGetValue(d, out string value))
+    int used = ZoneDaysInWindow(z.Name, z.Window);
+    Console.WriteLine($"{z.Name} days in window: {Color(used.ToString(), used > z.Limit ? "red" : "green")}");
+}
+
+// Print mandatory exit/return info
+string currentZone = dayZone[timelineEnd];
+foreach (var z in zones)
+{
+    if (currentZone == z.Name)
     {
-        value = lastZone ?? "OUTSIDE";
-        dayCountry[d] = value;
+        // Only consider the most recent continuous stay in this zone up to today
+        // Find the start of the current zone streak
+        DateTime streakStart = timelineEnd;
+        while (streakStart > timelineStart && dayZone.ContainsKey(streakStart.AddDays(-1)) && dayZone[streakStart.AddDays(-1)] == z.Name)
+            streakStart = streakStart.AddDays(-1);
+
+        // Build a set of all zone days in the window, but only count the current streak forward
+        HashSet<DateTime> projected = new(dayZone
+            .Where(kv => kv.Value == z.Name && kv.Key >= timelineEnd.AddDays(-z.Window + 1) && kv.Key < streakStart)
+            .Select(kv => kv.Key));
+        DateTime probe = timelineEnd;
+        int used = projected.Count + (int)(probe - streakStart).TotalDays + 1;
+        DateTime winStart = probe.AddDays(-z.Window + 1);
+
+        // Project forward from today, counting only the current streak
+        while (used < z.Limit)
+        {
+            probe = probe.AddDays(1);
+            // Remove days outside the window
+            winStart = probe.AddDays(-z.Window + 1);
+            int streakDays = (int)(probe - streakStart).TotalDays + 1;
+            used = projected.Count(d => d >= winStart && d < streakStart) + streakDays;
+        }
+        Console.WriteLine($"{Color($"MANDATORY {z.Name} EXIT BY:", "red")} {Color(probe.ToShortDateString(), "red")}");
     }
-
-    lastZone = value;
-}
-
-// Rebuild schengenDays, ukraineDays, ukDays based on filled dayCountry
-schengenDays = [];
-ukraineDays = [];
-ukDays = [];
-foreach (KeyValuePair<DateTime, string> kv in dayCountry)
-{
-    switch (kv.Value)
+    else if (z.Name == "UK")
     {
-        case "SCHENGEN": schengenDays.Add(kv.Key); break;
-        case "UKRAINE": ukraineDays.Add(kv.Key); break;
-        case "UK": ukDays.Add(kv.Key); break;
+        int used = ZoneDaysInWindow("UK", z.Window);
+        if (used >= z.Limit)
+        {
+            DateTime? nextEntry = GetUkNextEntry(z.Limit, z.Window);
+            if (nextEntry != null && nextEntry > timelineEnd)
+                Console.WriteLine($"{Color("You can return to UK on:", "yellow")} {Color(nextEntry.Value.ToShortDateString(), "yellow")}");
+        }
+        else
+        {
+            Console.WriteLine($"{Color($"You can return to UK for {z.Limit - used} days.", "blue")}");
+        }
     }
-}
-
-// Set today as the last day in the window
-today = lastDay;
-schengenStart = schengenWindowStart;
-
-// Calculate mandatory Schengen exit date if nothing changes
-const int schengenLimit = 90;
-DateTime? mustExit = null;
-List<DateTime> schengenList = schengenDays.OrderBy(d => d).ToList();
-
-// Project forward if currently in Schengen
-string currentZone = dayCountry[today];
-if (currentZone == "SCHENGEN")
-{
-    // Build a rolling window of the last 180 days including today
-    HashSet<DateTime> projectedSchengenDays = new(schengenDays.Where(d => d >= schengenStart && d <= today));
-    DateTime probe = today;
-    int used = projectedSchengenDays.Count;
-    while (used < schengenLimit)
+    else
     {
-        probe = probe.AddDays(1);
-        projectedSchengenDays.Add(probe);
-        // Remove days outside the 180-day window
-        DateTime windowStart = probe.AddDays(-179);
-        used = projectedSchengenDays.Count(d => d >= windowStart && d <= probe);
+        int used = ZoneDaysInWindow(z.Name, z.Window);
+        Console.WriteLine($"{Color($"You can return to {z.Name} for {z.Limit - used} days.", "yellow")}");
     }
-    mustExit = probe;
 }
 
-// If currently outside Schengen, calculate how many days can return for
-int schengenUsed = schengenDays.Count(d => d >= schengenStart && d <= today);
-int schengenLeft = schengenLimit - schengenUsed;
-
-Console.WriteLine($"\n{Color("==== TRAVEL SUMMARY ====", "blue")}");
-Console.WriteLine(
-    $"Schengen days in window: {Color(schengenUsed.ToString(), schengenUsed > schengenLimit ? "red" : "green")}");
-Console.WriteLine(
-    $"Ukraine days in window: {Color(ukraineDays.Count(d => d >= schengenStart && d <= today).ToString(), "green")}");
-Console.WriteLine(
-    $"UK days in window: {Color(ukDays.Count(d => d >= schengenStart && d <= today).ToString(), "green")}");
-if (currentZone == "SCHENGEN")
-{
-    Console.WriteLine(mustExit != null
-        ? $"{Color("MANDATORY SCHENGEN EXIT BY:", "red")} {Color(mustExit.Value.ToShortDateString(), "red")}"
-        : $"{Color("No mandatory exit required yet.", "green")}");
-}
-else
-{
-    Console.WriteLine($"{Color("You are currently outside Schengen.", "yellow")}");
-    Console.WriteLine($"{Color($"You can return for {schengenLeft} days.", schengenLeft > 0 ? "green" : "red")}");
-}
-
-// Show travel windows
+// Print travel windows
 Console.WriteLine($"\n{Color("==== TRAVEL WINDOWS ====", "blue")}");
-List<DateTime> allDays = dayCountry.Keys.OrderBy(d => d).ToList();
+List<DateTime> allDays = dayZone.Keys.OrderBy(d => d).ToList();
 if (allDays.Count == 0) Console.WriteLine("No travel days detected.");
 else
 {
     string? lastCountry = null;
-    DateTime? windowStart = null;
-    foreach (DateTime d in allDays)
+    DateTime? start = null;
+    foreach (DateTime day in allDays)
     {
         if (lastCountry == null)
         {
-            lastCountry = dayCountry[d];
-            windowStart = d;
+            lastCountry = dayZone[day];
+            start = day;
         }
-        else if (dayCountry[d] != lastCountry || (windowStart != null && (d - windowStart.Value).Days > 0 &&
-                                                  (d - allDays[allDays.IndexOf(d) - 1]).Days > 1))
+        else if (dayZone[day] != lastCountry)
         {
             Console.WriteLine(
-                $"{Color(windowStart!.Value.ToShortDateString(), lastCountry switch
+                $"{Color(start!.Value.ToShortDateString(), lastCountry switch
                 {
                     "SCHENGEN" => "yellow",
                     "UKRAINE" => "green",
                     "UK" => "blue",
                     _ => "red"
-                })} - {Color(allDays[allDays.IndexOf(d) - 1].ToShortDateString(), lastCountry switch
+                })} - {Color(day.AddDays(-1).ToShortDateString(), lastCountry switch
             {
                 "SCHENGEN" => "yellow",
                 "UKRAINE" => "green",
@@ -247,15 +208,13 @@ else
             "UK" => "blue",
             _ => "red"
         })}");
-            lastCountry = dayCountry[d];
-            windowStart = d;
+            lastCountry = dayZone[day];
+            start = day;
         }
     }
-
-    // Print last window if windowStart is not null
-    if (windowStart != null && lastCountry != null)
+    if (start != null && lastCountry != null)
         Console.WriteLine(
-            $"{Color(windowStart.Value.ToShortDateString(), lastCountry switch
+            $"{Color(start.Value.ToShortDateString(), lastCountry switch
             {
                 "SCHENGEN" => "yellow",
                 "UKRAINE" => "green",
@@ -277,6 +236,68 @@ else
 }
 
 return;
+
+// Helper: for UK, reset to 0 after leaving
+DateTime? GetUkNextEntry(int limit, int window)
+{
+    // Find last day in UK before today
+    DateTime? lastUkDay = null;
+    for (DateTime d = timelineEnd; d >= timelineStart; d = d.AddDays(-1))
+    {
+        if (dayZone[d] != "UK") continue;
+        lastUkDay = d;
+        break;
+    }
+    if (lastUkDay == null) return null;
+    // Find first day after lastUKDay that is not UK
+    DateTime? firstOut = null;
+    for (DateTime d = lastUkDay.Value.AddDays(1); d <= timelineEnd; d = d.AddDays(1))
+    {
+        if (dayZone[d] == "UK") continue;
+        firstOut = d;
+        break;
+    }
+
+    // After leaving, can return for a new 183-day period
+    return firstOut ?? null;
+}
+
+// Helper: get zone days in window
+int ZoneDaysInWindow(string zone, int windowDays)
+{
+    DateTime start = timelineEnd.AddDays(-windowDays + 1);
+    return dayZone.Count(kv => kv.Value == zone && kv.Key >= start && kv.Key <= timelineEnd);
+}
+
+// Helper: get next mandatory exit for 90/180 or 183/365 rule
+DateTime? GetMandatoryExit(string zone, int limit, int window)
+{
+    List<DateTime> days = dayZone.Where(kv => kv.Value == zone).Select(kv => kv.Key).OrderBy(d => d).ToList();
+    if (days.Count == 0) return null;
+    // Only consider up to today
+    days = days.Where(d => d <= timelineEnd).ToList();
+    for (int i = 0; i < days.Count; i++)
+    {
+        int count = days.Skip(i).Take(window).Count();
+        if (count > limit)
+            return days[i + limit];
+    }
+    // If currently in zone, project forward
+    if (dayZone[timelineEnd] != zone) return null;
+    {
+        HashSet<DateTime> projected = new(days.Where(d => d >= timelineEnd.AddDays(-window + 1) && d <= timelineEnd));
+        DateTime probe = timelineEnd;
+        int used = projected.Count;
+        while (used < limit)
+        {
+            probe = probe.AddDays(1);
+            projected.Add(probe);
+            DateTime winStart = probe.AddDays(-window + 1);
+            used = projected.Count(d => d >= winStart && d <= probe);
+        }
+        return probe;
+    }
+}
 
 string Color(string text, string color) => color switch
 {
