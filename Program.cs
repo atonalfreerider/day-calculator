@@ -267,6 +267,8 @@ else
 {
     string? lastCountry = null;
     DateTime? start = null;
+    DateTime windowBreak = timelineEnd.AddDays(-180 + 1);
+
     foreach (DateTime day in allDays)
     {
         if (lastCountry == null)
@@ -274,8 +276,10 @@ else
             lastCountry = dayZone[day];
             start = day;
         }
-        else if (dayZone[day] != lastCountry)
+        // Insert 180 window break if it falls inside this window
+        else if (dayZone[day] != lastCountry || day == windowBreak)
         {
+            DateTime windowEnd = (day == windowBreak) ? day.AddDays(-1) : day.AddDays(-1);
             Console.WriteLine(
                 $"{Color(start!.Value.ToShortDateString(), lastCountry switch
                 {
@@ -283,7 +287,7 @@ else
                     "UKRAINE" => "green",
                     "UK" => "blue",
                     _ => "red"
-                })} - {Color(day.AddDays(-1).ToShortDateString(), lastCountry switch
+                })} - {Color(windowEnd.ToShortDateString(), lastCountry switch
             {
                 "SCHENGEN" => "yellow",
                 "UKRAINE" => "green",
@@ -296,10 +300,17 @@ else
             "UK" => "blue",
             _ => "red"
         })}");
+
+            // Print the break if at the 180 window
+            if (day == windowBreak)
+                Console.WriteLine("-------180 Window------");
+
+            // Start new window
             lastCountry = dayZone[day];
             start = day;
         }
     }
+    // Print last window if needed
     if (start != null && lastCountry != null)
         Console.WriteLine(
             $"{Color(start.Value.ToShortDateString(), lastCountry switch
