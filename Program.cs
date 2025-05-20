@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using day_calculator;
 
 string calText;
 try
@@ -38,17 +39,50 @@ foreach (string eventString in events)
 {
     string[] lines = eventString.Split('\n');
     string summary = lines.FirstOrDefault(l => l.StartsWith("SUMMARY:"))?[8..]?.ToUpper() ?? "";
+    string location = lines.FirstOrDefault(l => l.StartsWith("LOCATION:"))?[9..]?.ToUpper() ?? "";
     string? zone = null;
+
+    // Detect zone by keywords
     foreach (var z in zones)
-        if (z.Keywords.Any(k => summary.Contains(k)))
+        if (z.Keywords.Any(k => summary.Contains(k) || location.Contains(k)))
             zone = z.Name;
-    if (zone == null && airbnbKeywords.Any(k => summary.Contains(k)))
+
+    // Detect by airport code in summary or location
+    foreach (var code in Airports.AirportCodes)
+        if (summary.Contains(code) || location.Contains(code))
+            zone = Airports.AirportToZone[code];
+
+    // Detect travel: "Location > Location" or "Location -> Location"
+    if (location.Contains(">") || location.Contains("->"))
+    {
+        string[] parts = location.Replace("->", ">").Split('>');
+        if (parts.Length == 2)
+        {
+            string to = parts[1].Trim();
+            string? toZone = null;
+            foreach (var z in zones)
+            {
+
+                if (z.Keywords.Any(k => to.Contains(k))) toZone = z.Name;
+            }
+            foreach (var code in Airports.AirportCodes)
+            {
+                if (to.Contains(code)) toZone = Airports.AirportToZone[code];
+            }
+            // If travel detected, prefer destination zone
+            if (toZone != null)
+                zone = toZone;
+        }
+    }
+
+    if (zone == null && airbnbKeywords.Any(k => summary.Contains(k) || location.Contains(k)))
         foreach (var z in zones)
-            if (z.Keywords.Any(k => summary.Contains(k)))
+            if (z.Keywords.Any(k => summary.Contains(k) || location.Contains(k)))
                 zone = z.Name;
     if (zone == null) continue;
 
     DateTime start = DateTime.MinValue, end = DateTime.MinValue;
+    bool allDay = false;
     foreach (string line in lines)
     {
         if (line.StartsWith("DTSTART;VALUE=DATE:"))
@@ -58,6 +92,7 @@ foreach (string eventString in events)
             int month = int.Parse(date.Substring(4, 2));
             int day = int.Parse(date.Substring(6, 2));
             start = new DateTime(year, month, day);
+            allDay = true;
         }
         else if (line.StartsWith("DTEND;VALUE=DATE:"))
         {
@@ -67,9 +102,47 @@ foreach (string eventString in events)
             int day = int.Parse(date.Substring(6, 2));
             end = new DateTime(year, month, day);
         }
+        else if (line.StartsWith("DTSTART:"))
+        {
+            // Not all-day event, parse as UTC or local
+            string date = line[(line.IndexOf(':') + 1)..].Trim();
+            if (date.Length >= 8)
+            {
+                int year = int.Parse(date[..4]);
+                int month = int.Parse(date.Substring(4, 2));
+                int day = int.Parse(date.Substring(6, 2));
+                int hour = date.Length >= 11 ? int.Parse(date.Substring(9, 2)) : 0;
+                int min = date.Length >= 13 ? int.Parse(date.Substring(11, 2)) : 0;
+                start = new DateTime(year, month, day, hour, min, 0);
+                allDay = false;
+            }
+        }
+        else if (line.StartsWith("DTEND:"))
+        {
+            string date = line[(line.IndexOf(':') + 1)..].Trim();
+            if (date.Length >= 8)
+            {
+                int year = int.Parse(date[..4]);
+                int month = int.Parse(date.Substring(4, 2));
+                int day = int.Parse(date.Substring(6, 2));
+                int hour = date.Length >= 11 ? int.Parse(date.Substring(9, 2)) : 0;
+                int min = date.Length >= 13 ? int.Parse(date.Substring(11, 2)) : 0;
+                end = new DateTime(year, month, day, hour, min, 0);
+            }
+        }
     }
     if (start == DateTime.MinValue || end == DateTime.MinValue) continue;
-    eventRanges.Add((start, end, zone));
+
+    // For non-all-day events, treat as single day for zone marking
+    if (!allDay)
+    {
+        DateTime day = start.Date;
+        eventRanges.Add((day, day.AddDays(1), zone));
+    }
+    else
+    {
+        eventRanges.Add((start, end, zone));
+    }
 }
 
 // Sort events by start date
@@ -137,16 +210,14 @@ foreach (var z in zones)
             .Select(kv => kv.Key));
         DateTime probe = timelineEnd;
         int used = projected.Count + (int)(probe - streakStart).TotalDays + 1;
-        DateTime winStart = probe.AddDays(-z.Window + 1);
 
         // Project forward from today, counting only the current streak
         while (used < z.Limit)
         {
             probe = probe.AddDays(1);
             // Remove days outside the window
-            winStart = probe.AddDays(-z.Window + 1);
             int streakDays = (int)(probe - streakStart).TotalDays + 1;
-            used = projected.Count(d => d >= winStart && d < streakStart) + streakDays;
+            used = projected.Count(d => d < streakStart) + streakDays;
         }
         Console.WriteLine($"{Color($"MANDATORY {z.Name} EXIT BY:", "red")} {Color(probe.ToShortDateString(), "red")}");
     }
@@ -267,36 +338,6 @@ int ZoneDaysInWindow(string zone, int windowDays)
 {
     DateTime start = timelineEnd.AddDays(-windowDays + 1);
     return dayZone.Count(kv => kv.Value == zone && kv.Key >= start && kv.Key <= timelineEnd);
-}
-
-// Helper: get next mandatory exit for 90/180 or 183/365 rule
-DateTime? GetMandatoryExit(string zone, int limit, int window)
-{
-    List<DateTime> days = dayZone.Where(kv => kv.Value == zone).Select(kv => kv.Key).OrderBy(d => d).ToList();
-    if (days.Count == 0) return null;
-    // Only consider up to today
-    days = days.Where(d => d <= timelineEnd).ToList();
-    for (int i = 0; i < days.Count; i++)
-    {
-        int count = days.Skip(i).Take(window).Count();
-        if (count > limit)
-            return days[i + limit];
-    }
-    // If currently in zone, project forward
-    if (dayZone[timelineEnd] != zone) return null;
-    {
-        HashSet<DateTime> projected = new(days.Where(d => d >= timelineEnd.AddDays(-window + 1) && d <= timelineEnd));
-        DateTime probe = timelineEnd;
-        int used = projected.Count;
-        while (used < limit)
-        {
-            probe = probe.AddDays(1);
-            projected.Add(probe);
-            DateTime winStart = probe.AddDays(-window + 1);
-            used = projected.Count(d => d >= winStart && d <= probe);
-        }
-        return probe;
-    }
 }
 
 string Color(string text, string color) => color switch
