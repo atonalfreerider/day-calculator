@@ -6,62 +6,24 @@ public static class Airports
     public static readonly string[] AirportCodes =
     [
         // Poland
-        "WAW", "KRK", "KTW", "GDN", "POZ", "SZZ", "WRO", "RZE", "LCJ", "LUZ",
+        "WAW", "KRK",
         // UK
-        "LHR", "LGW", "LTN", "STN", "LCY", "MAN", "EDI", "GLA", "BRS", "BHX",
+        "LHR",
         // France
-        "CDG", "ORY", "LYS", "NCE", "MRS", "BOD", "TLS",
+        "CDG",
         // Germany
-        "FRA", "MUC", "TXL", "BER", "HAM", "DUS", "CGN", "STR",
-        // Netherlands
-        "AMS", "EIN", "RTM",
-        // Austria
-        "VIE", "SZG",
+        "FRA", "MUC", "BER",
         // Switzerland
         "ZRH", "GVA", "BSL",
-        // Spain
-        "MAD", "BCN", "AGP", "PMI", "ALC", "VLC",
-        // Italy
-        "FCO", "MXP", "LIN", "VCE", "NAP", "BLQ",
-        // Belgium
-        "BRU", "CRL",
-        // Denmark
-        "CPH",
-        // Sweden
-        "ARN", "GOT",
-        // Norway
-        "OSL",
-        // Finland
-        "HEL",
-        // Portugal
-        "LIS", "OPO", "FAO",
         // Iceland
         "KEF",
         // Czech Republic
         "PRG",
-        // Hungary
-        "BUD",
-        // Slovakia
-        "BTS",
-        // Slovenia
-        "LJU",
-        // Luxembourg
-        "LUX",
-        // Estonia
-        "TLL",
-        // Latvia
-        "RIX",
-        // Lithuania
-        "VNO",
-        // Malta
-        "MLA",
         // US (major cities)
         "JFK", "EWR", "LGA", "BOS", "ORD", "LAX", "SFO", "SEA", "MIA", "DFW", "DEN", "IAD", "DCA", "ATL", "PHL", "DTW",
         "MSP", "CLT", "PHX", "IAH", "SAN", "TPA", "FLL", "BWI", "MDW", "SJC", "AUS", "DAL", "HOU", "OAK", "MCO", "SLC",
         "PDX", "STL", "CLE", "CMH", "CVG", "PIT", "MKE", "SMF", "RDU", "MCI", "BNA", "MSY", "SAT", "IND", "JAX", "OKC",
         "OMA", "RIC", "SDF", "TUL", "ABQ", "ELP", "ONT", "BUR", "LGB", "BOI", "TUS", "ANC",
-        // Ukraine
-        "IEV", "KBP", "ODS", "LWO", "HRK"
     ];
 
     public static readonly Dictionary<string, string> AirportToZone = new()

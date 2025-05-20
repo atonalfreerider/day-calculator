@@ -38,18 +38,23 @@ List<(DateTime start, DateTime end, string zone)> eventRanges = [];
 foreach (string eventString in events)
 {
     string[] lines = eventString.Split('\n');
-    string summary = lines.FirstOrDefault(l => l.StartsWith("SUMMARY:"))?[8..]?.ToUpper() ?? "";
-    string location = lines.FirstOrDefault(l => l.StartsWith("LOCATION:"))?[9..]?.ToUpper() ?? "";
+    string summary = lines.FirstOrDefault(l => l.StartsWith("SUMMARY:"))?[8..]?.ToUpperInvariant().Trim() ?? "";
+    string location = lines.FirstOrDefault(l => l.StartsWith("LOCATION:"))?[9..]?.ToUpperInvariant().Trim() ?? "";
+
+    // Special case: disregard "ukraine torch"
+    if (summary.Contains("UKRAINE TORCH") || summary.Contains("UKRAINE WAR ROOM")|| summary.Contains("UKRAINE DISCUSSION"))
+        continue;
+
     string? zone = null;
 
-    // Detect zone by keywords
+    // Detect zone by keywords (whole word match)
     foreach (var z in zones)
-        if (z.Keywords.Any(k => summary.Contains(k) || location.Contains(k)))
+        if (z.Keywords.Any(k => ContainsWholeWord(summary, k) || ContainsWholeWord(location, k)))
             zone = z.Name;
 
-    // Detect by airport code in summary or location
+    // Detect by airport code in summary or location (whole word match)
     foreach (var code in Airports.AirportCodes)
-        if (summary.Contains(code) || location.Contains(code))
+        if (ContainsWholeWord(summary, code) || ContainsWholeWord(location, code))
             zone = Airports.AirportToZone[code];
 
     // Detect travel: "Location > Location" or "Location -> Location"
@@ -62,12 +67,11 @@ foreach (string eventString in events)
             string? toZone = null;
             foreach (var z in zones)
             {
-
-                if (z.Keywords.Any(k => to.Contains(k))) toZone = z.Name;
+                if (z.Keywords.Any(k => ContainsWholeWord(to, k))) toZone = z.Name;
             }
             foreach (var code in Airports.AirportCodes)
             {
-                if (to.Contains(code)) toZone = Airports.AirportToZone[code];
+                if (ContainsWholeWord(to, code)) toZone = Airports.AirportToZone[code];
             }
             // If travel detected, prefer destination zone
             if (toZone != null)
@@ -75,9 +79,9 @@ foreach (string eventString in events)
         }
     }
 
-    if (zone == null && airbnbKeywords.Any(k => summary.Contains(k) || location.Contains(k)))
+    if (zone == null && airbnbKeywords.Any(k => ContainsWholeWord(summary, k) || ContainsWholeWord(location, k)))
         foreach (var z in zones)
-            if (z.Keywords.Any(k => summary.Contains(k) || location.Contains(k)))
+            if (z.Keywords.Any(k => ContainsWholeWord(summary, k) || ContainsWholeWord(location, k)))
                 zone = z.Name;
     if (zone == null) continue;
 
@@ -143,12 +147,23 @@ foreach (string eventString in events)
     {
         eventRanges.Add((start, end, zone));
     }
+
+    continue;
+
+    // Helper for whole word match
+    bool ContainsWholeWord(string haystack, string word)
+    {
+        if (string.IsNullOrWhiteSpace(word)) return false;
+        var tokens = haystack.Split([' ', ',', ';', '.', '-', '/', '\\', '>', '<', '(', ')', '[', ']', ':', '|', '\t', '\r', '\n'
+        ], StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Contains(word);
+    }
 }
 
 // Sort events by start date
 eventRanges.Sort((a, b) => a.start.CompareTo(b.start));
 
-// Fill timeline with continuous zones or OUTSIDE
+// Fill timeline: assume zone changes whenever an event (all-day or timed) starts with a zone
 DateTime timelineStart = eventRanges.Count > 0 ? eventRanges.Min(e => e.start) : DateTime.MinValue;
 DateTime timelineEnd = eventRanges.Count > 0 ? eventRanges.Max(e => e.end.AddDays(-1)) : DateTime.MinValue;
 if (timelineStart == DateTime.MinValue || timelineEnd == DateTime.MinValue)
@@ -159,33 +174,35 @@ if (timelineStart == DateTime.MinValue || timelineEnd == DateTime.MinValue)
 
 DateTime d = timelineStart;
 int idx = 0;
+string? currentZone = null;
 while (d <= timelineEnd)
 {
-    if (idx < eventRanges.Count && d >= eventRanges[idx].start && d < eventRanges[idx].end)
+    // If today is the start of any event, change zone to that event's zone
+    bool changed = false;
+    while (idx < eventRanges.Count && d == eventRanges[idx].start)
     {
-        dayZone[d] = eventRanges[idx].zone;
+        currentZone = eventRanges[idx].zone;
+        changed = true;
+        // If multiple events start on the same day, prefer the last one (arbitrary, but deterministic)
+        idx++;
     }
+    // If today is within an event, but not the start, keep currentZone
+    // If not in any event, keep previous zone
+
+    // Assign zone for today
+    if (currentZone != null)
+        dayZone[d] = currentZone;
     else
-    {
-        // If between events, fill with OUTSIDE or last zone if events are contiguous
-        // If d == end of previous event and d == start of next event, use next event's zone
-        bool isGap = true;
-        if (idx > 0 && d == eventRanges[idx - 1].end && idx < eventRanges.Count && d == eventRanges[idx].start)
-        {
-            dayZone[d] = eventRanges[idx].zone;
-            isGap = false;
-        }
-        if (isGap)
-            dayZone[d] = "OUTSIDE";
-    }
-    // Move to next event if needed
-    if (idx < eventRanges.Count && d >= eventRanges[idx].end.AddDays(-1))
+        dayZone[d] = "OUTSIDE";
+
+    // If we've passed the end of the current event, move idx forward
+    while (idx < eventRanges.Count && d >= eventRanges[idx].end.AddDays(-1))
         idx++;
     d = d.AddDays(1);
 }
 
 // Print summary
-Console.WriteLine($"today: {Color(timelineEnd.ToString(CultureInfo.InvariantCulture), "yellow")}");
+Console.WriteLine($"Last Event Date: {Color(timelineEnd.ToString(CultureInfo.InvariantCulture), "yellow")}");
 foreach (var z in zones)
 {
     int used = ZoneDaysInWindow(z.Name, z.Window);
@@ -193,10 +210,10 @@ foreach (var z in zones)
 }
 
 // Print mandatory exit/return info
-string currentZone = dayZone[timelineEnd];
+string printCurrentZone = dayZone[timelineEnd];
 foreach (var z in zones)
 {
-    if (currentZone == z.Name)
+    if (printCurrentZone == z.Name)
     {
         // Only consider the most recent continuous stay in this zone up to today
         // Find the start of the current zone streak
